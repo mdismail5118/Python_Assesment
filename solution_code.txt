@@ -1,0 +1,67 @@
+from pyspark.sql \
+    import \
+    window as w,\
+    SparkSession as ss, \
+    types as t, \
+    functions as f
+from pyspark import SparkContext as sc
+
+spark = ss.builder.getOrCreate()
+context = sc.getOrCreate()
+
+collect_spark_dfs = {}
+
+# TRANSFORMATION ==========================================================================================================
+# transforming transaction table ---------------------------------------------------------------------------------------
+df = spark.read.json(path = r"C:\Users\user\Desktop\Reveolve_python\input_data\starter\transaction")
+df.show(truncate = False)
+df = df.withColumn('exploded_basket', f.explode(df.basket))
+df = df.withColumn('product_id', df.exploded_basket.product_id).\
+withColumn('price', df.exploded_basket.price)
+df.show(truncate = False)
+df.printSchema()
+transaction_df = df.drop('exploded_basket', 'basket', 'd')
+transaction_df = transaction_df.withColumn('date_of_purchase',
+                                           f.to_timestamp(transaction_df.date_of_purchase, 'yyyy-MM-dd HH:mm:ss'))
+
+# transformed transaction table ->
+transaction_df.show(truncate = False)
+transaction_df.printSchema()
+collect_spark_dfs['txns_df'] = transaction_df
+
+
+# customer table -------------------------------------------------------------------------------------------------------
+customer_df = spark.read.csv(path=r'C:\Users\user\Desktop\Reveolve_python\input_data\starter\customers.csv',
+                             header = True, inferSchema = True)
+customer_df.show(truncate=False)
+customer_df.printSchema()
+collect_spark_dfs['custs_df'] = customer_df
+
+# product table --------------------------------------------------------------------------------------------------------
+product_df = spark.read.csv(path=r'C:\Users\user\Desktop\Reveolve_python\input_data\starter\products.csv',
+                             header = True, inferSchema = True)
+product_df = product_df.drop('product_description')
+product_df.show(truncate=False)
+product_df.printSchema()
+collect_spark_dfs['prods_df'] = product_df
+
+# joining tables
+txn_cust_inner = transaction_df.\
+    join(customer_df, on=transaction_df.customer_id == customer_df.customer_id, how='inner').drop(customer_df.customer_id).\
+    join(product_df, on=transaction_df.product_id == product_df.product_id, how='inner').drop(product_df.product_id)
+txn_cust_inner = txn_cust_inner.select(txn_cust_inner.customer_id,
+                                       txn_cust_inner.loyalty_score,
+                                       txn_cust_inner.product_id,
+                                       txn_cust_inner.product_category)
+
+print(txn_cust_inner.count())
+# Add a count column using the window function
+window_spec = w.Window.partitionBy("customer_id", 'product_id')
+txn_cust_inner = txn_cust_inner.withColumn("purchase_count", f.count(f.col("product_id")).over(window_spec))
+print(txn_cust_inner.count())
+txn_cust_inner = txn_cust_inner.dropDuplicates().sort('customer_id')
+print(txn_cust_inner.count())
+txn_cust_inner.show(n=txn_cust_inner.count(), truncate = False)
+collect_spark_dfs['txn_cust_prod_inner_df'] = txn_cust_inner
+
+
